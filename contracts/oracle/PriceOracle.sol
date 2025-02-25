@@ -80,7 +80,7 @@ contract PriceOracle is Ownable {
         (
             uint80 roundId,
             int256 answer,
-            uint256 startedAt,
+            ,
             uint256 updatedAt,
             uint80 answeredInRound
         ) = ethUsdFeed.latestRoundData();
@@ -100,7 +100,7 @@ contract PriceOracle is Ownable {
         (
             uint80 roundId,
             int256 answer,
-            uint256 startedAt,
+            ,
             uint256 updatedAt,
             uint80 answeredInRound
         ) = aeroUsdFeed.latestRoundData();

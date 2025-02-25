@@ -1,11 +1,16 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.7;
 
-import "@daohaus/baal-contracts/contracts/BaalSummoner.sol";
-import "@daohaus/baal-contracts/contracts/LootERC20.sol";
+interface IBaalSummoner {
+    function summonBaalAndSafe(
+        bytes memory initParams,
+        bytes memory initializationActions,
+        address multisendLibrary
+    ) external returns (address baal, address safe, address lootToken);
+}
 
 contract HedgeSummoner {
-    BaalSummoner public immutable baalSummoner;
+    IBaalSummoner public immutable baalSummoner;
     
     struct InitialSettings {
         string lootTokenName;
@@ -20,12 +25,12 @@ contract HedgeSummoner {
     }
     
     constructor(address _baalSummoner) {
-        baalSummoner = BaalSummoner(_baalSummoner);
+        baalSummoner = IBaalSummoner(_baalSummoner);
     }
     
     function summonHedgeDAO(
         InitialSettings memory settings,
-        uint256 initialLoot,
+        // uint256 initialLoot,
         address[] calldata initialLootRecipients,
         uint256[] calldata initialLootAmounts
     ) external returns (address baal, address lootToken) {
@@ -45,9 +50,10 @@ contract HedgeSummoner {
         );
         
         // Initial member setup - only Loot, no Shares
+        uint256[] memory emptyArray = new uint256[](0);  // Properly initialize empty array
         bytes memory initializationActions = abi.encode(
             initialLootRecipients,
-            uint256[](0),           // No shares amounts
+            emptyArray,           // No shares amounts
             initialLootAmounts
         );
         

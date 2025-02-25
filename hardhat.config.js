@@ -1,10 +1,31 @@
-require("@nomicfoundation/hardhat-toolbox");
-require("@nomiclabs/hardhat-etherscan");
+require("@nomiclabs/hardhat-waffle");
+require("@nomiclabs/hardhat-ethers");
 require('dotenv').config();
 
 /** @type import('hardhat/config').HardhatUserConfig */
 module.exports = {
-  solidity: "0.8.28",
+  solidity: {
+    compilers: [
+      {
+        version: "0.8.28",
+        settings: {
+          optimizer: {
+            enabled: true,
+            runs: 200
+          }
+        }
+      },
+      {
+        version: "0.8.7",
+        settings: {
+          optimizer: {
+            enabled: true,
+            runs: 200
+          }
+        }
+      }
+    ]
+  },
   networks: {
     sepolia: {
       url: `https://eth-sepolia.g.alchemy.com/v2/${process.env.ALCHEMY_API_KEY}`,
@@ -14,12 +35,7 @@ module.exports = {
     base: {
       url: "https://mainnet.base.org",
       accounts: [process.env.PRIVATE_KEY],
-      chainId: 8453,
-      verify: {
-        etherscan: {
-          apiUrl: "https://api.basescan.org"
-        }
-      }
+      chainId: 8453
     }
   },
   etherscan: {

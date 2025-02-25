@@ -1,19 +1,32 @@
 {
   "name": "flightcontrol",
   "version": "1.0.0",
-  "description": "",
+  "description": "Flight Control - HedgeDAO Smart Contracts",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "deploy": "hardhat run scripts/deploy_all.js",
+    "verify": "hardhat verify",
+    "clean": "hardhat clean"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": [
+    "dao",
+    "defi",
+    "ethereum",
+    "solidity"
+  ],
+  "author": "YourPilot",
+  "license": "MIT",
   "devDependencies": {
-    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
-    "hardhat": "^2.22.19"
-  },
-  "dependencies": {
-    "@daohaus/baal-contracts": "^1.2.18"
+    "@nomiclabs/hardhat-ethers": "^2.2.3",
+    "@nomiclabs/hardhat-waffle": "^2.0.6",
+    "@openzeppelin/contracts": "^4.8.3",
+    "@chainlink/contracts": "^0.8.0",
+    "dotenv": "^16.4.7",
+    "hardhat": "^2.22.19",
+    "chai": "^4.3.0",
+    "ethereum-waffle": "^4.0.10",
+    "ethers": "^5.7.2"
   }
 }

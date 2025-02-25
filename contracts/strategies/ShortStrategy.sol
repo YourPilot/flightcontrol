@@ -33,10 +33,10 @@ pragma solidity ^0.8.7;
  */
 
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "../interfaces/IStrategy.sol";
 import "../interfaces/ICompound.sol";
 import "../interfaces/IAerodrome.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 contract ShortStrategy is IStrategy, ReentrancyGuard {
     enum ShortState {
@@ -131,6 +131,26 @@ contract ShortStrategy is IStrategy, ReentrancyGuard {
     event LPRemoved(uint256 aeroAmount, uint256 usdcAmount, uint256 timestamp);
     event EmergencyLPRemoved(uint256 aeroAmount, uint256 usdcAmount, uint256 timestamp);
     
+    // Modifiers
+    modifier onlyHedgeBaal() {
+        require(msg.sender == hedgeBaal, "Only HedgeBaal");
+        _;
+    }
+
+    modifier onlyState(ShortState requiredState) {
+        require(currentState == requiredState, "Invalid state");
+        _;
+    }
+
+    modifier onlyAuthorized() {
+        require(msg.sender == hedgeBaal, "Only authorized");
+        _;
+    }
+    
+    // Add these declarations near the top of the contract with other state variables
+    address public lpToken;        // USDC-AERO LP token address
+    IERC20 public aeroToken;      // Same as AERO token but with explicit naming for clarity
+    
     constructor(
         address _compound,
         address _aerodrome,
@@ -147,9 +167,13 @@ contract ShortStrategy is IStrategy, ReentrancyGuard {
         treasury = _treasury;
         hedgeBaal = _hedgeBaal;
         lootToken = IERC20(_lootToken);
+        aeroToken = IERC20(_aero);  // Initialize aeroToken
+        // Get LP token address using poolFor
+        lpToken = aerodrome.poolFor(address(usdc), address(aero));
+        require(lpToken != address(0), "LP token not found");
     }
     
-    function initialize() external onlyHedgeBaal {
+    function initialize() external onlyHedgeBaal onlyState(ShortState.NOT_STARTED) {
         require(currentState == ShortState.NOT_STARTED, "Already initialized");
         
         // Supply USDC to Compound
@@ -585,5 +609,54 @@ contract ShortStrategy is IStrategy, ReentrancyGuard {
         );
         
         emit EmergencyLPRemoved(aeroAmount, usdcAmount, block.timestamp);
+    }
+
+    function _unstakeAndBreakLP(uint256 lpAmount, uint256 targetAeroAmount) internal {
+        // Unstake LP tokens from farm
+        aerodrome.unstake(lpAmount);
+        
+        // Remove liquidity
+        IERC20(lpToken).approve(address(aerodrome), lpAmount);
+        (uint256 aeroReceived, uint256 usdcReceived) = aerodrome.removeLiquidity(
+            address(aero),
+            address(usdc),
+            lpAmount,
+            0, // Min AERO - emergency function so no slippage protection
+            0, // Min USDC - emergency function so no slippage protection
+            address(this)
+        );
+        
+        // Repay AERO debt
+        aero.approve(address(compound), targetAeroAmount);
+        compound.repay(address(aero), targetAeroAmount);
+        
+        // If we have excess AERO, sell it for USDC and supply to Compound
+        uint256 remainingAero = aero.balanceOf(address(this));
+        if (remainingAero > 0) {
+            _sellAERO(remainingAero);
+            uint256 usdcBalance = usdc.balanceOf(address(this));
+            if (usdcBalance > 0) {
+                _supplyUSDC(usdcBalance);
+            }
+        }
+        
+        // Update position info
+        position.lpTokens = position.lpTokens - lpAmount;
+    }
+
+    function _sellRewardsForUSDC(uint256 amount) internal returns (uint256) {
+        // Approve rewards token for swap
+        IERC20(compound.rewardsToken()).approve(address(aerodrome), amount);
+        
+        // Swap rewards token for USDC through Aerodrome
+        uint256 usdcReceived = aerodrome.swapExactTokensForTokens(
+            amount,
+            0, // Min amount out - should use actual slippage protection
+            compound.rewardsToken(),
+            address(usdc),
+            address(this)
+        );
+        
+        return usdcReceived;
     }
 } 

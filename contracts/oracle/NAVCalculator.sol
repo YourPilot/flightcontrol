@@ -1,20 +1,73 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.7;
 
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
+import "../interfaces/ICompound.sol";
+import "../interfaces/IAerodrome.sol";
+
 contract NAVCalculator {
     address public immutable priceOracle;
     address public immutable lootToken;
     
-    constructor(address _priceOracle, address _lootToken) {
+    address public owner;
+    mapping(address => bool) public authorized;
+
+    ICompound public immutable compound;
+    IAerodrome public immutable aerodrome;
+    IERC20 public immutable aeroToken;
+    IERC20 public immutable wethToken;
+    IERC20 public immutable usdcToken;
+    address public immutable hedgeBaal;
+    
+    AggregatorV3Interface public immutable aeroUsdPriceFeed;
+    AggregatorV3Interface public immutable ethUsdPriceFeed;
+
+    modifier onlyAuthorized() {
+        require(authorized[msg.sender] || msg.sender == owner, "Not authorized");
+        _;
+    }
+
+    constructor(
+        address _priceOracle,
+        address _lootToken,
+        address _compound,
+        address _aerodrome,
+        address _aeroToken,
+        address _wethToken,
+        address _usdcToken,
+        address _hedgeBaal,
+        address _aeroUsdPriceFeed,
+        address _ethUsdPriceFeed
+    ) {
         priceOracle = _priceOracle;
         lootToken = _lootToken;
+        compound = ICompound(_compound);
+        aerodrome = IAerodrome(_aerodrome);
+        aeroToken = IERC20(_aeroToken);
+        wethToken = IERC20(_wethToken);
+        usdcToken = IERC20(_usdcToken);
+        hedgeBaal = _hedgeBaal;
+        aeroUsdPriceFeed = AggregatorV3Interface(_aeroUsdPriceFeed);
+        ethUsdPriceFeed = AggregatorV3Interface(_ethUsdPriceFeed);
+        owner = msg.sender;
+        authorized[msg.sender] = true;
+    }
+    
+    /**
+     * @notice Add or remove authorized addresses
+     * @param account Address to modify authorization for
+     * @param isAuthorized True to authorize, false to revoke
+     */
+    function setAuthorized(address account, bool isAuthorized) external {
+        require(msg.sender == owner, "Only owner");
+        authorized[account] = isAuthorized;
     }
     
     function calculateNAV() external view returns (uint256) {
-        // Get total vault value from oracle
-        // Divide by total loot supply
-        // Return NAV per loot token
-        return 0;
+        uint256 totalValue = _calculateTotalValue();
+        uint256 totalSupply = IERC20(lootToken).totalSupply();
+        return totalSupply > 0 ? (totalValue * 1e18) / totalSupply : 0;
     }
     
     function getHistoricalPerformance(uint256 startTime, uint256 endTime) 
@@ -22,8 +75,12 @@ contract NAVCalculator {
         view 
         returns (int256) 
     {
-        // Calculate performance over time period
-        return 0;
+        require(startTime < endTime, "Invalid time range");
+        require(endTime <= block.timestamp, "End time in future");
+        
+        // This would need historical price data storage
+        // Could be implemented by storing periodic snapshots of NAV
+        revert("Historical performance tracking not implemented");
     }
     
     /**
@@ -43,7 +100,7 @@ contract NAVCalculator {
      * @return collateralFactor Current collateral factor (percentage)
      */
     function getUSDCCollateral() external view returns (uint256 amount, uint256 collateralFactor) {
-        amount = compound.getCollateralAmount(address(hedgeBaal), address(usdcToken));
+        amount = compound.collateralBalanceOf(address(hedgeBaal), address(usdcToken));
         collateralFactor = compound.getCollateralFactor(address(usdcToken));
     }
     
@@ -53,7 +110,7 @@ contract NAVCalculator {
      * @return valueInUSD Debt value in USD (6 decimals)
      */
     function getAERODebt() external view returns (uint256 amount, uint256 valueInUSD) {
-        amount = compound.getBorrowAmount(address(hedgeBaal), address(aeroToken));
+        amount = compound.borrowBalanceOf(address(hedgeBaal));
         (, int256 aeroPrice,,,) = aeroUsdPriceFeed.latestRoundData();
         valueInUSD = (amount * uint256(aeroPrice)) / 1e30;
     }
@@ -69,8 +126,8 @@ contract NAVCalculator {
         uint256 usdcAeroLPValue,
         uint256 totalLPValue
     ) {
-        address ethAeroLP = aerodrome.getPair(address(wethToken), address(aeroToken));
-        address usdcAeroLP = aerodrome.getPair(address(usdcToken), address(aeroToken));
+        address ethAeroLP = aerodrome.poolFor(address(wethToken), address(aeroToken));
+        address usdcAeroLP = aerodrome.poolFor(address(usdcToken), address(aeroToken));
         
         ethAeroLPValue = _calculateSingleLPValue(ethAeroLP, IERC20(ethAeroLP).balanceOf(address(hedgeBaal)));
         usdcAeroLPValue = _calculateSingleLPValue(usdcAeroLP, IERC20(usdcAeroLP).balanceOf(address(hedgeBaal)));
@@ -83,7 +140,8 @@ contract NAVCalculator {
      * @return borrowAPY Annual borrow APY (percentage with 2 decimals)
      */
     function getBorrowRates() external view returns (uint256 borrowAPR, uint256 borrowAPY) {
-        borrowAPR = compound.getBorrowRate(address(aeroToken));
+        uint256 utilization = compound.borrowBalanceOf(address(hedgeBaal)) * 1e18 / compound.getCollateralReserves(address(aeroToken));
+        borrowAPR = compound.getBorrowRate(utilization);
         borrowAPY = _calculateAPY(borrowAPR);
     }
     
@@ -98,7 +156,7 @@ contract NAVCalculator {
         uint256 rewardAPR,
         uint256 totalAPY
     ) {
-        address ethAeroLP = aerodrome.getPair(address(wethToken), address(aeroToken));
+        address ethAeroLP = aerodrome.poolFor(address(wethToken), address(aeroToken));
         baseAPR = aerodrome.getBaseAPR(ethAeroLP);
         rewardAPR = aerodrome.getRewardAPR(ethAeroLP);
         totalAPY = _calculateAPY(baseAPR + rewardAPR);
@@ -111,11 +169,11 @@ contract NAVCalculator {
      */
     function getHealthFactor() external view returns (uint256 healthFactor, uint256 liquidationThreshold) {
         (uint256 collateralValue, uint256 debtValue) = (
-            compound.getCollateralValue(address(hedgeBaal)),
-            compound.getBorrowValue(address(hedgeBaal))
+            compound.collateralBalanceOf(address(hedgeBaal), address(usdcToken)),
+            compound.borrowBalanceOf(address(hedgeBaal))
         );
         healthFactor = debtValue > 0 ? (collateralValue * 10000) / debtValue : type(uint256).max;
-        liquidationThreshold = compound.getLiquidationThreshold(address(aeroToken));
+        liquidationThreshold = compound.getCollateralFactor(address(usdcToken));
     }
     
     /**
@@ -129,13 +187,18 @@ contract NAVCalculator {
         uint256 compRewards,
         uint256 totalValueUSD
     ) {
-        address ethAeroLP = aerodrome.getPair(address(wethToken), address(aeroToken));
+        address ethAeroLP = aerodrome.poolFor(address(wethToken), address(aeroToken));
         aeroRewards = aerodrome.pendingRewards(ethAeroLP, address(hedgeBaal));
-        compRewards = compound.getPendingRewards(address(hedgeBaal));
+        compRewards = compound.getCompAccrued(address(hedgeBaal));
         
         (, int256 aeroPrice,,,) = aeroUsdPriceFeed.latestRoundData();
         totalValueUSD = (aeroRewards * uint256(aeroPrice)) / 1e30;
-        // Add COMP rewards value if needed
+        
+        // Add COMP rewards value
+        (, int256 ethPrice,,,) = ethUsdPriceFeed.latestRoundData();
+        // Assuming COMP price is denominated in ETH, convert to USD
+        uint256 compValueUSD = (compRewards * uint256(ethPrice)) / 1e18;
+        totalValueUSD += compValueUSD;
     }
     
     /**
@@ -149,7 +212,17 @@ contract NAVCalculator {
         uint256 realizedPnL,
         uint256 currentDrawdown
     ) {
-        // Implementation depends on how you want to track P&L
+        require(entryValueInETH > 0, "No entry value recorded");
+        
+        uint256 currentValueUSD = _calculateTotalValue();
+        (, int256 ethPrice,,,) = ethUsdPriceFeed.latestRoundData();
+        uint256 currentValueETH = (currentValueUSD * 1e18) / uint256(ethPrice);
+        
+        unrealizedPnL = int256(currentValueETH) - int256(entryValueInETH);
+        
+        // These values are returned but not calculated yet
+        realizedPnL = 0;
+        currentDrawdown = 0; // Needs peak value tracking
     }
     
     /**
@@ -194,5 +267,62 @@ contract NAVCalculator {
         
         pnlInETH = int256(currentValueETH) - int256(entryValueInETH);
         pnlPercent = (pnlInETH * 10000) / int256(entryValueInETH);
+    }
+
+    /**
+     * @notice Calculate value of a single LP position
+     * @param lpToken Address of LP token
+     * @param balance Balance of LP tokens
+     * @return valueUSD Value in USD (6 decimals)
+     */
+    function _calculateSingleLPValue(address lpToken, uint256 balance) internal view returns (uint256 valueUSD) {
+        if (balance == 0) return 0;
+        
+        (uint256 reserve0, uint256 reserve1,) = IAerodrome(lpToken).getReserves();
+        uint256 totalSupply = IERC20(lpToken).totalSupply();
+        
+        // Calculate share of reserves
+        uint256 share0 = (reserve0 * balance) / totalSupply;
+        uint256 share1 = (reserve1 * balance) / totalSupply;
+        
+        // Get token prices and calculate value
+        (, int256 aeroPrice,,,) = aeroUsdPriceFeed.latestRoundData();
+        
+        // Assuming one token is always AERO, adjust calculation based on pair
+        if (IAerodrome(lpToken).token0() == address(aeroToken)) {
+            valueUSD = (share0 * uint256(aeroPrice)) / 1e30;
+            // Add value of other token (ETH or USDC)
+            if (IAerodrome(lpToken).token1() == address(wethToken)) {
+                (, int256 ethPrice,,,) = ethUsdPriceFeed.latestRoundData();
+                valueUSD += (share1 * uint256(ethPrice)) / 1e30;
+            } else {
+                valueUSD += share1; // USDC is already in USD terms with 6 decimals
+            }
+        } else {
+            valueUSD = (share1 * uint256(aeroPrice)) / 1e30;
+            // Add value of other token (ETH or USDC)
+            if (IAerodrome(lpToken).token0() == address(wethToken)) {
+                (, int256 ethPrice,,,) = ethUsdPriceFeed.latestRoundData();
+                valueUSD += (share0 * uint256(ethPrice)) / 1e30;
+            } else {
+                valueUSD += share0; // USDC is already in USD terms with 6 decimals
+            }
+        }
+    }
+
+    /**
+     * @notice Calculate total value of all positions
+     * @return totalValueUSD Total value in USD (6 decimals)
+     */
+    function _calculateTotalValue() internal view returns (uint256 totalValueUSD) {
+        (, uint256 spotValue) = this.getSpotAEROPosition();
+        
+        (,, uint256 totalLpValue) = this.getLPPositions();
+        
+        (uint256 usdcCollateral,) = this.getUSDCCollateral();
+        
+        (, uint256 debtValue) = this.getAERODebt();
+        
+        totalValueUSD = spotValue + totalLpValue + usdcCollateral - debtValue;
     }
 } 

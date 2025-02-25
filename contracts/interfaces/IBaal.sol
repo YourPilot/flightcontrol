@@ -6,4 +6,5 @@ interface IBaal {
     function sponsorProposal(uint256 id) external;
     function executeProposal(uint256 id, bytes[] memory proposalData) external;
     function shamans(address) external view returns (uint256);
+    function setRageQuit(bool enabled) external;
 } 
