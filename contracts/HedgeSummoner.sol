@@ -2,7 +2,7 @@
 pragma solidity ^0.8.7;
 
 import "@daohaus/baal-contracts/contracts/BaalSummoner.sol";
-import "@daohaus/baal-contracts/contracts/Loot.sol";
+import "@daohaus/baal-contracts/contracts/LootERC20.sol";
 
 contract HedgeSummoner {
     BaalSummoner public immutable baalSummoner;

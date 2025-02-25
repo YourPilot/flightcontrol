@@ -1,21 +1,30 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.7;
 
-import "@gnosis.pm/zodiac/contracts/core/Module.sol";
+// Core interfaces
 import "./interfaces/IBaal.sol";
-import "./interfaces/IERC20.sol";
-import "./interfaces/IHedgeStaking.sol";
+import "./interfaces/IBaalToken.sol";
+import "./interfaces/ILootToken.sol";
 import "./interfaces/IStrategy.sol";
+import "./interfaces/IHedgeYeeter.sol";
 
-contract HedgeBaal is Module {
+// OpenZeppelin contracts
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+
+// Gnosis Safe Module
+import "@gnosis.pm/zodiac/contracts/core/Module.sol";
+
+contract HedgeBaal is Module, ReentrancyGuard {
     enum FlightState {
-        BOARDING,       // 0: Initial deposits, RQ allowed
-        TAKE_OFF,       // 1: Moving to LP, triggers LP Strategy
-        ASCENT,         // 2: Farming LP, staking enabled
-        PEAK_ALTITUDE,  // 3: Threshold met, triggers Short Strategy
-        DESCENT,        // 4: Short active, staking enabled
-        LANDING,        // 5: Threshold met, triggers Rebalance
-        TERMINAL        // 6: RQ enabled, can cycle to TAKE_OFF
+        BOARDING,      // Collecting funds
+        TAKE_OFF,      // Ready to LP
+        ASCENT,        // In LP position
+        PEAK_ALTITUDE, // Ready to Short
+        DESCENT,       // In Short position
+        LANDING,       // Ready to close
+        TERMINAL       // Done
     }
     
     FlightState public currentState;
@@ -327,5 +336,19 @@ contract HedgeBaal is Module {
         require(_strategy != address(0), "Invalid address");
         rebalanceStrategy = IStrategy(_strategy);
         emit StrategySet("Rebalance", _strategy);
+    }
+
+    function moveToNextState() external {
+        if (currentState == FlightState.TAKE_OFF) {
+            require(lpStrategy.validate(), "Not ready for LP");
+            require(lpStrategy.execute(), "LP failed");
+            currentState = FlightState.ASCENT;
+        }
+        else if (currentState == FlightState.PEAK_ALTITUDE) {
+            require(shortStrategy.validate(), "Not ready for Short");
+            require(shortStrategy.execute(), "Short failed");
+            currentState = FlightState.DESCENT;
+        }
+        // etc...
     }
 }
