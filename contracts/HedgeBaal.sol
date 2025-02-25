@@ -3,6 +3,9 @@ pragma solidity ^0.8.7;
 
 import "@gnosis.pm/zodiac/contracts/core/Module.sol";
 import "./interfaces/IBaal.sol";
+import "./interfaces/IERC20.sol";
+import "./interfaces/IHedgeStaking.sol";
+import "./interfaces/IStrategy.sol";
 
 contract HedgeBaal is Module {
     enum FlightState {
@@ -33,11 +36,25 @@ contract HedgeBaal is Module {
     uint256 public constant TERMINAL_COOLDOWN = 5 days;
     uint256 public terminalEntryTime;
     
+    IERC20 public immutable lootToken;
+    uint256 public constant STAKING_THRESHOLD = 60; // 60%
+    
+    // Strategy contracts
+    IStrategy public lpStrategy;
+    IStrategy public shortStrategy;
+    IStrategy public rebalanceStrategy;
+    
     event FlightStateChanged(FlightState newState, uint256 cycle, uint256 timestamp);
     event NewCycleStarted(uint256 cycleNumber, uint256 timestamp);
     event BoardingStarted(uint256 startTime, uint256 target);
     event BoardingSuccessful(uint256 amountRaised, uint256 timestamp);
     event ForcedTakeoff(uint256 amountRaised, uint256 timestamp);
+    event DescentInitiated(address indexed caller, uint256 timestamp);
+    event TerminalEntered(address indexed caller, uint256 timestamp);
+    event LPRewardsClaimed(address indexed caller, uint256 amount, uint256 timestamp);
+    event ShortRewardsClaimed(address indexed caller, uint256 amount, uint256 timestamp);
+    event DebtRepaid(address indexed caller, uint256 amount, uint256 timestamp);
+    event StrategySet(string strategyType, address strategy);
     
     modifier onlyValidStateTransition(FlightState nextState) {
         require(_isValidTransition(currentState, nextState), "Invalid state transition");
@@ -54,14 +71,17 @@ contract HedgeBaal is Module {
         _;
     }
     
-    modifier onlyAutomation() {
-        // Add Chainlink Automation address check
+    modifier onlyLootHolder() {
+        uint256 directBalance = lootToken.balanceOf(msg.sender);
+        uint256 stakedBalance = IHedgeStaking(stakingContract).balanceOf(msg.sender);
+        require(directBalance > 0 || stakedBalance > 0, "Not a LOOT holder");
         _;
     }
     
-    modifier onlyDuringBoarding() {
-        require(currentState == FlightState.BOARDING, "Not in boarding state");
-        require(block.timestamp <= boardingStartTime + BOARDING_DURATION, "Boarding ended");
+    modifier sufficientStaking() {
+        uint256 totalStaked = IHedgeStaking(stakingContract).totalStaked();
+        uint256 totalSupply = lootToken.totalSupply();
+        require(totalStaked >= (totalSupply * STAKING_THRESHOLD) / 100, "Insufficient staking");
         _;
     }
     
@@ -71,7 +91,8 @@ contract HedgeBaal is Module {
         address _target, 
         address _baal,
         address _stakingContract,
-        address _yeeter
+        address _yeeter,
+        address _lootToken
     ) Module(_owner, _avatar, _target) {
         baal = IBaal(_baal);
         stakingContract = _stakingContract;
@@ -79,6 +100,7 @@ contract HedgeBaal is Module {
         currentState = FlightState.BOARDING;
         currentCycle = 1;
         cycleStartTime[currentCycle] = block.timestamp;
+        lootToken = IERC20(_lootToken);
     }
     
     function _isValidTransition(FlightState current, FlightState next) 
@@ -107,7 +129,7 @@ contract HedgeBaal is Module {
     // Automation confirms LP is active
     function confirmAscent() 
         external 
-        onlyAutomation 
+        onlyStaking 
         onlyValidStateTransition(FlightState.ASCENT) 
     {
         currentState = FlightState.ASCENT;
@@ -144,7 +166,7 @@ contract HedgeBaal is Module {
     // Automation confirms short is active
     function confirmDescent() 
         external 
-        onlyAutomation 
+        onlyStaking 
         onlyValidStateTransition(FlightState.DESCENT) 
     {
         currentState = FlightState.DESCENT;
@@ -165,13 +187,16 @@ contract HedgeBaal is Module {
     // Automation confirms rebalancing complete
     function enterTerminal() 
         external 
-        onlyAutomation 
+        onlyLootHolder 
+        sufficientStaking 
         onlyValidStateTransition(FlightState.TERMINAL) 
     {
+        require(currentState == FlightState.LANDING, "Not landing");
         currentState = FlightState.TERMINAL;
         terminalEntryTime = block.timestamp;
         _enableRageQuit();
         emit FlightStateChanged(FlightState.TERMINAL, currentCycle, block.timestamp);
+        emit TerminalEntered(msg.sender, block.timestamp);
     }
     
     // Start new cycle from Terminal
@@ -255,5 +280,52 @@ contract HedgeBaal is Module {
                 initiateFlightPlan();
             }
         }
+    }
+    
+    function initiateDescentStrategy() 
+        external 
+        onlyLootHolder 
+        sufficientStaking 
+        onlyValidStateTransition(FlightState.DESCENT) 
+    {
+        require(currentState == FlightState.PEAK_ALTITUDE, "Not at peak");
+        currentState = FlightState.DESCENT;
+        _executeShortStrategy();
+        emit FlightStateChanged(FlightState.DESCENT, currentCycle, block.timestamp);
+        emit DescentInitiated(msg.sender, block.timestamp);
+    }
+    
+    function claimLPRewards() external onlyLootHolder {
+        uint256 amountClaimed = lpStrategy.claimRewards();
+        emit LPRewardsClaimed(msg.sender, amountClaimed, block.timestamp);
+    }
+    
+    function claimShortRewards() external onlyLootHolder {
+        uint256 amountClaimed = shortStrategy.claimRewards();
+        emit ShortRewardsClaimed(msg.sender, amountClaimed, block.timestamp);
+    }
+    
+    function repayShortDebt(uint256 amount) external onlyLootHolder {
+        shortStrategy.repayDebt(amount);
+        emit DebtRepaid(msg.sender, amount, block.timestamp);
+    }
+    
+    // Setters for strategies (onlyOwner)
+    function setLPStrategy(address _strategy) external onlyOwner {
+        require(_strategy != address(0), "Invalid address");
+        lpStrategy = IStrategy(_strategy);
+        emit StrategySet("LP", _strategy);
+    }
+    
+    function setShortStrategy(address _strategy) external onlyOwner {
+        require(_strategy != address(0), "Invalid address");
+        shortStrategy = IStrategy(_strategy);
+        emit StrategySet("Short", _strategy);
+    }
+    
+    function setRebalanceStrategy(address _strategy) external onlyOwner {
+        require(_strategy != address(0), "Invalid address");
+        rebalanceStrategy = IStrategy(_strategy);
+        emit StrategySet("Rebalance", _strategy);
     }
 }
